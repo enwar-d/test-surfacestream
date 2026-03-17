@@ -1105,7 +1105,7 @@ let sbTimer=null,pbTimer=null,_mHide=false;
 let watchProgress={};
 const LKEY='sv-prog-v4',TKEY='sv-theme',DSKEY='sv-default-src',FBKEY='sv-feb-token';
 // ⬇ Replace this with your Cloudflare Worker URL after deploying febbox-worker.js
-const PROXY='https://YOUR-WORKER.workers.dev/proxy?url=';
+const PROXY='https://febbox-proxy.enwar-d.workers.dev/';
 
 // ════════════════ FEBBOX TOKEN ════════════════
 function getFebToken(){return localStorage.getItem(FBKEY)||'';}
