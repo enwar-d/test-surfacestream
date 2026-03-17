@@ -1127,14 +1127,16 @@ function loadFebTokenInput(){
 }
 
 // ════════════════ FEBBOX EXTRACTOR ════════════════
-// Uses Showbox mbpapi directly with TripleDES encryption (no dmdb.network needed)
+// Uses Showbox mbpapi directly with TripleDES encryption
 // Requires CryptoJS loaded from CDN
 const SB_CFG={
   BASE:'https://mbpapi.shegu.net/api/api_client/index/',
+  BASE2:'https://showbox.shegu.net/api/api_client/index/',
   KEY:'123d6cedf626dy54233aa1w6',
   IV:'wEiphTn!',
   APP_ID:'com.tdo.showbox',
   APP_KEY:'moviebox',
+  APP_VERSION:'14.0',
 };
 let _cryptoJsReady=false;
 async function ensureCryptoJs(){
@@ -1154,12 +1156,13 @@ function sbEncrypt(data){
   return enc.toString();
 }
 function sbMd5(str){return CryptoJS.MD5(str).toString();}
-async function sbRequest(module_,params={}){
+async function sbRequest(module_,params={},useBase2=false){
   const ts=Math.floor(Date.now()/1000);
   const rnd=Math.floor(Math.random()*9000+1000);
   const payload={
     appid:SB_CFG.APP_ID,
     appkey:SB_CFG.APP_KEY,
+    appversion:SB_CFG.APP_VERSION,
     lang:'en',
     module:module_,
     channel:'Website',
@@ -1170,37 +1173,39 @@ async function sbRequest(module_,params={}){
     nonce:String(rnd),
     ...params,
   };
+  // verify = md5( md5(sorted_params + appkey) + timestamp + nonce )
   const paramStr=Object.keys(payload).sort().map(k=>`${k}=${payload[k]}`).join('&');
-  const verify=sbMd5(sbMd5(paramStr+SB_CFG.APP_KEY)+String(ts)+String(rnd));
-  payload.verify=verify;
+  payload.verify=sbMd5(sbMd5(paramStr+SB_CFG.APP_KEY)+String(ts)+String(rnd));
   const encrypted=sbEncrypt(JSON.stringify(payload));
-  const body=new URLSearchParams({data:encrypted});
-  const res=await fetch(PROXY+encodeURIComponent(SB_CFG.BASE),{
+  const base=useBase2?SB_CFG.BASE2:SB_CFG.BASE;
+  const res=await fetch(PROXY+encodeURIComponent(base),{
     method:'POST',
-    body:body.toString(),
+    body:`data=${encodeURIComponent(encrypted)}`,
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
   });
-  if(!res.ok)throw new Error(`Showbox API error ${res.status}`);
+  if(!res.ok){
+    // Try fallback server
+    if(!useBase2){return sbRequest(module_,params,true);}
+    throw new Error(`Showbox API error ${res.status}`);
+  }
   const json=await res.json();
+  if(json.code&&json.code!==1&&json.code!==0)throw new Error(json.msg||`API code ${json.code}`);
   if(!json.data)throw new Error(json.msg||'No data from Showbox API');
   return json.data;
 }
 async function sbSearchByTmdb(tmdbId,type){
-  // Search by title using TMDB id to find the showbox internal id
-  // We fetch it via the 'search' module using the known TMDB id trick
-  // box_type: 1=movie, 2=tv
   const boxType=type==='movie'?'1':'2';
-  const data=await sbRequest('Search4Subsection',{keyword:String(tmdbId),box_type:boxType,page:'1',pagelimit:'20'});
+  // Module names used by the real app
+  const data=await sbRequest('Search_v2',{keyword:String(tmdbId),box_type:boxType});
   const list=data?.list||data?.data||[];
-  if(!list.length)throw new Error('No Showbox results for this title');
-  // Return first match
+  if(!list.length)throw new Error('No Showbox results for this content');
   return list[0];
 }
 async function sbGetFebboxId(sbId,boxType){
-  // boxType: 1=movie, 2=tv
+  // box_type 1=movie, 2=tv
   const data=await sbRequest('Movie_FebBox',{id:String(sbId),box_type:String(boxType)});
-  const link=data?.link||data?.share_link;
-  if(!link)throw new Error('No Febbox share link from Showbox');
+  const link=data?.link||data?.share_link||data?.data?.link;
+  if(!link)throw new Error('No Febbox share link returned');
   return link.split('/').pop();
 }
 async function febboxGetFiles(shareKey,parentId=0,token=''){
@@ -1228,11 +1233,11 @@ async function febboxExtract(tmdbId,type,season,episode){
   await ensureCryptoJs();
   const isMovie=type==='movie';
   const boxType=isMovie?'1':'2';
-  // Step 1: Find showbox internal ID by searching with TMDB id
+  // Step 1: Find showbox internal ID
   setIframeLoading('Searching Showbox…');
   const sbItem=await sbSearchByTmdb(tmdbId,type);
   const sbId=sbItem.id||sbItem.movie_id||sbItem.tv_id;
-  if(!sbId)throw new Error('Could not find Showbox ID');
+  if(!sbId)throw new Error('Could not get Showbox ID');
   // Step 2: Get Febbox share key
   setIframeLoading('Getting Febbox link…');
   const shareKey=await sbGetFebboxId(sbId,boxType);
@@ -1243,23 +1248,21 @@ async function febboxExtract(tmdbId,type,season,episode){
   // Step 4: Find the right file
   let fid=null;
   if(isMovie){
-    // Pick first video file, or the first entry
     const vf=files.find(f=>f.file_icon==='video_icon')||files[0];
     fid=vf?.fid;
   } else {
     const padS=String(season).padStart(2,'0'),padE=String(episode).padStart(2,'0');
-    // Look for season folder first
     for(const f of files){
       if(f.is_dir||f.file_icon==='dir_icon'){
-        const name=f.file_name||'';
-        const sMatch=name.match(/season\s*(\d+)/i)||name.match(/s(\d+)/i);
+        const name=(f.file_name||'').toLowerCase();
+        const sMatch=name.match(/season\s*(\d+)/i)||name.match(/^s(\d+)$/i);
         if(sMatch&&parseInt(sMatch[1],10)===season){
           setIframeLoading(`Loading Season ${season}…`);
           const epFiles=await febboxGetFiles(shareKey,f.fid,token);
           for(const ep of epFiles){
             if(ep.file_icon==='video_icon'||ep.type==='video'){
               const fn=(ep.file_name||'').toLowerCase();
-              if(fn.includes(`s${padS}e${padE}`)||fn.includes(`${season}x${episode.toString().padStart(2,'0')}`)){
+              if(fn.includes(`s${padS}e${padE}`)||fn.includes(`${season}x${String(episode).padStart(2,'0')}`)){
                 fid=ep.fid;break;
               }
             }
@@ -1268,7 +1271,6 @@ async function febboxExtract(tmdbId,type,season,episode){
         }
       }
     }
-    // Fallback: flat file list
     if(!fid){
       for(const f of files){
         const fn=(f.file_name||'').toLowerCase();
@@ -1276,8 +1278,7 @@ async function febboxExtract(tmdbId,type,season,episode){
       }
     }
   }
-  if(!fid)throw new Error('Could not find the episode file on Febbox');
-  // Step 5: Get stream links
+  if(!fid)throw new Error('Could not find episode file on Febbox');
   setIframeLoading('Fetching stream links…');
   const streams=await febboxGetLinks(shareKey,fid,token);
   if(!streams.length)throw new Error('No stream URLs returned — token may be expired');
