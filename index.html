@@ -1137,6 +1137,7 @@ const SB_CFG={
   APP_ID:'com.tdo.showbox',
   APP_KEY:'moviebox',
   APP_VERSION:'14.0',
+  APP_VERSION_CODE:'22',
 };
 let _cryptoJsReady=false;
 async function ensureCryptoJs(){
@@ -1163,6 +1164,7 @@ async function sbRequest(module_,params={},useBase2=false){
     appid:SB_CFG.APP_ID,
     appkey:SB_CFG.APP_KEY,
     appversion:SB_CFG.APP_VERSION,
+    versioncode:SB_CFG.APP_VERSION_CODE,
     lang:'en',
     module:module_,
     channel:'Website',
